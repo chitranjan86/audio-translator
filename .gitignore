@@ -33,3 +33,11 @@ build/
 .vscode/
 uploads/
 application-secrets.properties
+whisper-output/
+translate-temp/
+*.srt
+*.vtt
+*.tsv
+arvindm.json
+arvindm.txt
+audio old/
