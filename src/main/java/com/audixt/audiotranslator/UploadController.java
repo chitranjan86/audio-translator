@@ -16,62 +16,40 @@ public class UploadController {
     private JobRepository jobRepository;
 
     @Autowired
-    private S3Service s3Service;
+    private PipelineService pipelineService;
 
-    @Autowired
-    private WhisperService whisperService;
-
-    @Autowired
-    private TranslateService translateService;
-
-    @Autowired
-    private PollyService pollyService;
     @PostMapping("/upload")
-public String uploadAudio(
-        @RequestParam("file") MultipartFile file,
-        @RequestParam("sourceLanguage") String sourceLanguage,
-        @RequestParam("targetLanguage") String targetLanguage
-) {
-    try {
-        String projectRoot = System.getProperty("user.dir");
-        File uploadDir = new File(projectRoot, "uploads");
-        if (!uploadDir.exists()) {
-            uploadDir.mkdirs();
+    public String uploadAudio(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("sourceLanguage") String sourceLanguage,
+            @RequestParam("targetLanguage") String targetLanguage
+    ) {
+        try {
+            String projectRoot = System.getProperty("user.dir");
+            File uploadDir = new File(projectRoot, "uploads");
+            if (!uploadDir.exists()) {
+                uploadDir.mkdirs();
+            }
+
+            File destination = new File(uploadDir, file.getOriginalFilename());
+            file.transferTo(destination);
+
+            Job job = new Job();
+            job.setFileName(file.getOriginalFilename());
+            job.setSourceLanguage(sourceLanguage);
+            job.setTargetLanguage(targetLanguage);
+            job.setStatus("PENDING");
+
+            Job savedJob = jobRepository.save(job);
+
+            // kick off the heavy work in the background - this call
+            // returns IMMEDIATELY, doesn't wait for processing to finish
+            pipelineService.processJob(savedJob.getId(), destination, sourceLanguage, targetLanguage);
+
+            return "Job created! ID = " + savedJob.getId() + ". Check status at /jobs/" + savedJob.getId();
+
+        } catch (IOException e) {
+            return "Failed: " + e.getMessage();
         }
-
-        File destination = new File(uploadDir, file.getOriginalFilename());
-        file.transferTo(destination);
-
-        String s3Key = s3Service.uploadFile(destination);
-
-        String transcript = whisperService.transcribe(destination, sourceLanguage);
-        String translatedText = translateService.translate(transcript, sourceLanguage, targetLanguage);
-
-        Job job = new Job();
-        job.setFileName(file.getOriginalFilename());
-        job.setSourceLanguage(sourceLanguage);
-        job.setTargetLanguage(targetLanguage);
-        job.setStatus("TRANSLATED");
-        job.setTranscript(transcript);
-        job.setTranslatedText(translatedText);
-
-        Job savedJob = jobRepository.save(job);
-
-        // NEW: text-to-speech
-        String outputAudioPath = projectRoot + "/uploads/output-" + savedJob.getId() + ".mp3";
-        pollyService.synthesizeSpeech(translatedText, targetLanguage, outputAudioPath);
-
-        savedJob.setStatus("COMPLETED");
-        savedJob.setOutputAudioPath(outputAudioPath); // NEW field
-        jobRepository.save(savedJob);
-
-        return "Job created! ID = " + savedJob.getId()
-                + "\nTranscript: " + transcript
-                + "\nTranslated: " + translatedText
-                + "\nOutput audio saved at: " + outputAudioPath;
-
-    } catch (IOException e) {
-        return "Failed: " + e.getMessage();
     }
 }
-    }
