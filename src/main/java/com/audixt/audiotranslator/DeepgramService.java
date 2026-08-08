@@ -3,12 +3,13 @@ package com.audixt.audiotranslator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.File;
-import java.nio.file.Files;
 
 @Service
 public class DeepgramService {
@@ -19,16 +20,24 @@ public class DeepgramService {
     // languageCode should be short codes like "hi", "en"
     public String transcribe(File audioFile, String languageCode) {
         try {
-            RestTemplate restTemplate = new RestTemplate();
+            // long connect/read timeouts (20 min) so a big file being uploaded
+            // to Deepgram, or a long transcription job, doesn't get killed early
+            SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+            factory.setConnectTimeout(60_000);
+            factory.setReadTimeout(20 * 60_000);
+            RestTemplate restTemplate = new RestTemplate(factory);
 
-            String url = "https://api.deepgram.com/v1/listen?language=" + languageCode + "&model=nova-2";
+            String url = "https://api.deepgram.com/v1/listen?language=" + languageCode + "&model=nova-3";
 
             HttpHeaders headers = new HttpHeaders();
             headers.set("Authorization", "Token " + apiKey);
             headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+            headers.setContentLength(audioFile.length());
 
-            byte[] audioBytes = Files.readAllBytes(audioFile.toPath());
-            HttpEntity<byte[]> request = new HttpEntity<>(audioBytes, headers);
+            // stream from disk instead of Files.readAllBytes() - avoids holding
+            // a ~1hr audio file's entire byte array in memory at once
+            FileSystemResource resource = new FileSystemResource(audioFile);
+            HttpEntity<FileSystemResource> request = new HttpEntity<>(resource, headers);
 
             ResponseEntity<String> response = restTemplate.postForEntity(url, request, String.class);
 
