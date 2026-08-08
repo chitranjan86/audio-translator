@@ -1,4 +1,4 @@
-# Audixt — Audio Translator
+# Audixt — Audio Translator (https://audio-translator-frontend.onrender.com/)
 ### Project Architecture Notes
 
 ---
