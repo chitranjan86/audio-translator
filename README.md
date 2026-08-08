@@ -3,7 +3,6 @@
 Upload an audio file or record one with your mic, get it transcribed, review and edit the transcript, get it translated, review and edit the translation, and receive a newly synthesized spoken track in the target language — fully downloadable as MP3.
 
 **Live app:** https://audio-translator-frontend.onrender.com
-**Backend API:** https://audio-translator-72y4.onrender.com
 
 ---
 
