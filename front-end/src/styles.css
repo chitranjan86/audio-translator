@@ -387,3 +387,106 @@ footer {
   .hero h1 { font-size: 36px; }
   .dropzone { min-height: 180px; }
 }
+
+/* ---------- Mode picker (Upload vs Record) ---------- */
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.mode-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+.mode-tab:hover { border-color: var(--border-strong); color: var(--text); }
+.mode-tab.active {
+  color: var(--text);
+  border-color: var(--in);
+  background: color-mix(in srgb, var(--in) 8%, var(--surface-2));
+}
+
+/* ---------- Mic recorder panel ---------- */
+.record-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 20px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+  text-align: center;
+}
+.record-dot-wrap {
+  width: 56px; height: 56px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--surface-3);
+}
+.record-dot-wrap.live {
+  color: var(--danger);
+  border-color: var(--danger);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--danger) 14%, transparent);
+  animation: pulse-rec 1.4s ease-in-out infinite;
+}
+@keyframes pulse-rec {
+  0%, 100% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--danger) 14%, transparent); }
+  50% { box-shadow: 0 0 0 12px color-mix(in srgb, var(--danger) 8%, transparent); }
+}
+.record-timer {
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--muted);
+  font-size: 13px;
+}
+.danger-btn {
+  background: var(--danger) !important;
+}
+
+/* ---------- Review / edit panel (transcript + translation confirmation) ---------- */
+.review-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+  margin-top: 4px;
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.review-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 120px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  font-family: inherit;
+  outline: 0;
+}
+.review-textarea:focus { border-color: var(--in); }

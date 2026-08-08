@@ -24,41 +24,73 @@ public class PipelineService {
     @Autowired
     private TtsService ttsService;
 
-    // @Async makes this method run on a separate background thread -
-    // whoever calls it does NOT wait for it to finish
+    // STAGE 1: upload -> transcribe. Pipeline PAUSES here (status TRANSCRIBED)
+    // so the user can review/edit the transcript before translation runs.
     @Async
-    public void processJob(Long jobId, File audioFile, String sourceLanguage, String targetLanguage) {
+    public void runTranscription(Long jobId, File audioFile, String sourceLanguage) {
         try {
             Job job = jobRepository.findById(jobId).orElseThrow();
 
-            String s3Key = s3Service.uploadFile(audioFile);
+            s3Service.uploadFile(audioFile);
 
             String transcript = deepgramService.transcribe(audioFile, sourceLanguage);
             job.setTranscript(transcript);
             job.setStatus("TRANSCRIBED");
             jobRepository.save(job);
 
-            String translatedText = translateService.translate(transcript, sourceLanguage, targetLanguage);
+        } catch (Exception e) {
+            failJob(jobId);
+            e.printStackTrace();
+        }
+    }
+
+    // STAGE 2: confirmed transcript -> translation. Pipeline PAUSES here
+    // (status TRANSLATED) so the user can review/edit the translation.
+    @Async
+    public void runTranslation(Long jobId, String confirmedTranscript, String sourceLanguage, String targetLanguage) {
+        try {
+            Job job = jobRepository.findById(jobId).orElseThrow();
+
+            job.setTranscript(confirmedTranscript); // save whatever the user confirmed
+
+            String translatedText = translateService.translate(confirmedTranscript, sourceLanguage, targetLanguage);
             job.setTranslatedText(translatedText);
             job.setStatus("TRANSLATED");
             jobRepository.save(job);
 
+        } catch (Exception e) {
+            failJob(jobId);
+            e.printStackTrace();
+        }
+    }
+
+    // STAGE 3: confirmed translation -> speech. Final stage.
+    @Async
+    public void runSynthesis(Long jobId, String confirmedTranslatedText, String targetLanguage) {
+        try {
+            Job job = jobRepository.findById(jobId).orElseThrow();
+
+            job.setTranslatedText(confirmedTranslatedText); // save whatever the user confirmed
+
             String projectRoot = System.getProperty("user.dir");
             String outputAudioPath = projectRoot + "/uploads/output-" + jobId + "-" + java.util.UUID.randomUUID() + ".mp3";
-            ttsService.synthesizeSpeech(translatedText, targetLanguage, outputAudioPath);
+            ttsService.synthesizeSpeech(confirmedTranslatedText, targetLanguage, outputAudioPath);
 
             job.setOutputAudioPath(outputAudioPath);
             job.setStatus("COMPLETED");
             jobRepository.save(job);
 
         } catch (Exception e) {
-            // if anything fails, mark the job as FAILED instead of leaving it stuck
-            Job job = jobRepository.findById(jobId).orElse(null);
-            if (job != null) {
-                job.setStatus("FAILED");
-                jobRepository.save(job);
-            }
+            failJob(jobId);
             e.printStackTrace();
+        }
+    }
+
+    private void failJob(Long jobId) {
+        Job job = jobRepository.findById(jobId).orElse(null);
+        if (job != null) {
+            job.setStatus("FAILED");
+            jobRepository.save(job);
         }
     }
 }

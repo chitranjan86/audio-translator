@@ -10,9 +10,12 @@ import {
   FileAudio,
   Languages,
   LoaderCircle,
+  Mic,
   Moon,
+  Pencil,
   Play,
   Search,
+  Square,
   Sun,
   UploadCloud,
   X,
@@ -72,17 +75,34 @@ const LANGUAGES = [
 ].map(([code, name, flag]) => ({ code, name, flag }));
 
 const statusLabels = {
-  PENDING: "Uploading",
-  TRANSCRIBED: "Transcribed",
-  TRANSLATED: "Translated",
+  PENDING: "Uploading & transcribing",
+  TRANSCRIBED: "Awaiting transcript review",
+  TRANSLATING: "Translating",
+  TRANSLATED: "Awaiting translation review",
+  SYNTHESIZING: "Generating voice",
   COMPLETED: "Ready",
   FAILED: "Failed"
+};
+
+// how far along the rail each status fills, purely for the progress bar
+const statusProgress = {
+  PENDING: 12,
+  TRANSCRIBED: 30,
+  TRANSLATING: 50,
+  TRANSLATED: 68,
+  SYNTHESIZING: 88,
+  COMPLETED: 100,
+  FAILED: 100
 };
 
 function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem("audixt-theme") || "dark");
   const [source, setSource] = useState("hi");
   const [target, setTarget] = useState("en");
+
+  // "upload" or "record" - null until the user picks one
+  const [mode, setMode] = useState(null);
+
   const [file, setFile] = useState(null);
   const [job, setJob] = useState(null);
   const [jobId, setJobId] = useState(null);
@@ -92,6 +112,19 @@ function App() {
   const [dragging, setDragging] = useState(false);
   const [copied, setCopied] = useState("");
   const inputRef = useRef(null);
+
+  // --- mic recording state ---
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const recordTimerRef = useRef(null);
+  const streamRef = useRef(null);
+
+  // --- review/edit state for the two confirmation stages ---
+  const [transcriptDraft, setTranscriptDraft] = useState("");
+  const [translationDraft, setTranslationDraft] = useState("");
+  const [confirming, setConfirming] = useState(false);
 
   const copyText = async (text, key) => {
     if (!text) return;
@@ -109,6 +142,21 @@ function App() {
     localStorage.setItem("audixt-theme", theme);
   }, [theme]);
 
+  // keep the editable drafts in sync whenever a fresh transcript/translation
+  // comes back from the backend (but don't stomp on edits the user is
+  // actively making mid-review - only sync when the value actually changes)
+  useEffect(() => {
+    if (job?.status === "TRANSCRIBED") {
+      setTranscriptDraft(job.transcript || "");
+    }
+  }, [job?.status, job?.transcript]);
+
+  useEffect(() => {
+    if (job?.status === "TRANSLATED") {
+      setTranslationDraft(job.translatedText || "");
+    }
+  }, [job?.status, job?.translatedText]);
+
   useEffect(() => {
     if (!jobId) return;
 
@@ -120,7 +168,11 @@ function App() {
         const data = await response.json();
         setJob(data);
 
-        if (data.status !== "COMPLETED" && data.status !== "FAILED") {
+        // keep polling through every stage, including the two paused/review
+        // states - a status only stops advancing on its own once it hits
+        // TRANSCRIBED or TRANSLATED, which is exactly when we want the
+        // poll to keep confirming nothing changed underneath the user
+        if (!["COMPLETED", "FAILED"].includes(data.status)) {
           timer = setTimeout(poll, 1400);
         }
       } catch (e) {
@@ -134,7 +186,7 @@ function App() {
 
   const progress = useMemo(() => {
     if (!job) return 0;
-    return { PENDING: 18, TRANSCRIBED: 48, TRANSLATED: 76, COMPLETED: 100, FAILED: 100 }[job.status] || 0;
+    return statusProgress[job.status] || 0;
   }, [job]);
 
   const chooseFile = (selected) => {
@@ -160,9 +212,57 @@ function App() {
     setTarget(source);
   };
 
+  // ---------- mic recording ----------
+
+  const startRecording = async () => {
+    setError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      recordedChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: "audio/webm" });
+        const recordedFile = new File([blob], `recording-${Date.now()}.webm`, { type: "audio/webm" });
+        setFile(recordedFile);
+        setJob(null);
+        setJobId(null);
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      setRecordSeconds(0);
+      recordTimerRef.current = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
+    } catch (e) {
+      setError("Couldn't access the microphone. Check your browser's permission settings.");
+    }
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+    setIsRecording(false);
+    clearInterval(recordTimerRef.current);
+  };
+
+  const formatSeconds = (s) => {
+    const m = Math.floor(s / 60).toString().padStart(2, "0");
+    const r = (s % 60).toString().padStart(2, "0");
+    return `${m}:${r}`;
+  };
+
+  // ---------- stage 1: upload/record -> kicks off transcription ----------
+
   const translate = async () => {
     if (!file) {
-      setError("Choose an audio file first.");
+      setError("Choose an audio file or record one first.");
       return;
     }
     if (source === target) {
@@ -182,8 +282,6 @@ function App() {
       form.append("sourceLanguage", source);
       form.append("targetLanguage", target);
 
-      // XHR (not fetch) so we get real upload-progress events - matters
-      // once files start running into the hundreds of MB
       const text = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", `${API_URL}/upload`);
@@ -207,7 +305,6 @@ function App() {
         xhr.send(form);
       });
 
-      // Backend returns: Job created! ID = 1. Check status at /jobs/1
       const match = text.match(/ID\s*=\s*(\d+)/i);
 
       if (!match) {
@@ -225,17 +322,77 @@ function App() {
     }
   };
 
+  // ---------- stage 2: confirm transcript -> kicks off translation ----------
+
+  const confirmTranscript = async () => {
+    if (!transcriptDraft.trim()) {
+      setError("Transcript can't be empty.");
+      return;
+    }
+    setError("");
+    setConfirming(true);
+    try {
+      const response = await fetch(`${API_URL}/jobs/${jobId}/confirm-transcript`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: transcriptDraft })
+      });
+      if (!response.ok) throw new Error("Could not confirm transcript.");
+      const data = await response.json();
+      setJob(data); // status becomes TRANSLATING, polling picks up from here
+    } catch (e) {
+      setError(e.message || "Something went wrong confirming the transcript.");
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  // ---------- stage 3: confirm translation -> kicks off voice synthesis ----------
+
+  const confirmTranslation = async () => {
+    if (!translationDraft.trim()) {
+      setError("Translated text can't be empty.");
+      return;
+    }
+    setError("");
+    setConfirming(true);
+    try {
+      const response = await fetch(`${API_URL}/jobs/${jobId}/confirm-translation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ translatedText: translationDraft })
+      });
+      if (!response.ok) throw new Error("Could not confirm translation.");
+      const data = await response.json();
+      setJob(data); // status becomes SYNTHESIZING, polling picks up from here
+    } catch (e) {
+      setError(e.message || "Something went wrong confirming the translation.");
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   const reset = () => {
     setFile(null);
     setJob(null);
     setJobId(null);
     setError("");
+    setMode(null);
+    setTranscriptDraft("");
+    setTranslationDraft("");
     if (inputRef.current) inputRef.current.value = "";
   };
 
   const sourceLanguage = LANGUAGES.find((l) => l.code === source);
   const targetLanguage = LANGUAGES.find((l) => l.code === target);
   const audioUrl = job?.status === "COMPLETED" && jobId ? `${API_URL}/jobs/${jobId}/audio` : null;
+
+  // is the job in one of the two "paused, waiting on the user" states?
+  const awaitingTranscriptReview = job?.status === "TRANSCRIBED";
+  const awaitingTranslationReview = job?.status === "TRANSLATED";
+  const isBusy =
+    uploading ||
+    (job && ["PENDING", "TRANSLATING", "SYNTHESIZING"].includes(job.status));
 
   return (
     <div className="app-shell">
@@ -263,50 +420,80 @@ function App() {
 
       <main className="main">
         <section className="hero">
-          <div className="eyebrow"><Sparkles size={15} /> Transcribe · Translate · Resynthesize</div>
+          <div className="eyebrow"><Sparkles size={15} /> Transcribe · Review · Translate · Review · Resynthesize</div>
           <h1>Audio in one language.<br /><span>Voice out in another.</span></h1>
-          <p>Drop in a recording, pick the two languages, and Audixt runs it through the full chain — transcript, translation, and a new spoken track — while you watch each stage complete.</p>
+          <p>Upload a recording or record one with your mic, review and fix the transcript, review and fix the translation, then generate the final spoken track.</p>
         </section>
 
         <section className="translator-card">
-          <div
-            className={`dropzone ${dragging ? "dragging" : ""} ${file ? "has-file" : ""}`}
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={onDrop}
-            onClick={() => inputRef.current?.click()}
-          >
-            <input
-              ref={inputRef}
-              type="file"
-              accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,.webm"
-              hidden
-              onChange={(e) => chooseFile(e.target.files?.[0])}
-            />
 
-            <div className="upload-icon">
-              {file ? <FileAudio size={26} /> : <UploadCloud size={28} />}
-            </div>
-
-            {file ? (
-              <>
-                <strong>{file.name}</strong>
-                <span>{(file.size / 1024 / 1024).toFixed(2)} MB · Click to replace</span>
-              </>
-            ) : (
-              <>
-                <strong>Drop your audio here</strong>
-                <span>or click to browse · MP3, WAV, M4A, AAC and more</span>
-              </>
-            )}
-          </div>
-
+          {/* ---------- Mode picker: only shown before a file/recording exists ---------- */}
           {!file && (
+            <div className="mode-tabs">
+              <button
+                className={`mode-tab ${mode === "upload" ? "active" : ""}`}
+                onClick={() => setMode("upload")}
+              >
+                <UploadCloud size={17} /> Upload file
+              </button>
+              <button
+                className={`mode-tab ${mode === "record" ? "active" : ""}`}
+                onClick={() => setMode("record")}
+              >
+                <Mic size={17} /> Record with mic
+              </button>
+            </div>
+          )}
+
+          {/* ---------- Upload mode ---------- */}
+          {!file && mode === "upload" && (
+            <div
+              className={`dropzone ${dragging ? "dragging" : ""}`}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              onClick={() => inputRef.current?.click()}
+            >
+              <input
+                ref={inputRef}
+                type="file"
+                accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,.webm"
+                hidden
+                onChange={(e) => chooseFile(e.target.files?.[0])}
+              />
+              <div className="upload-icon"><UploadCloud size={28} /></div>
+              <strong>Drop your audio here</strong>
+              <span>or click to browse · MP3, WAV, M4A, AAC and more</span>
+            </div>
+          )}
+
+          {!file && mode === "upload" && (
             <div className="size-hint">
               <Clock size={13} /> Long recordings are fine — files up to ~1GB (roughly an hour of audio) are supported.
             </div>
           )}
 
+          {/* ---------- Record mode ---------- */}
+          {!file && mode === "record" && (
+            <div className="record-panel">
+              <div className={`record-dot-wrap ${isRecording ? "live" : ""}`}>
+                <Mic size={30} />
+              </div>
+              <strong>{isRecording ? "Recording…" : "Ready to record"}</strong>
+              <span className="record-timer">{formatSeconds(recordSeconds)}</span>
+              {!isRecording ? (
+                <button className="translate-btn" onClick={startRecording}>
+                  <Mic size={18} /> Start recording
+                </button>
+              ) : (
+                <button className="translate-btn danger-btn" onClick={stopRecording}>
+                  <Square size={18} /> Stop recording
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* ---------- Selected file/recording preview (shared by both modes) ---------- */}
           {file && (
             <div className="file-row">
               <div className="file-info">
@@ -316,7 +503,7 @@ function App() {
                   <small>{(file.size / 1024 / 1024).toFixed(2)} MB</small>
                 </div>
               </div>
-              <button className="icon-btn" onClick={(e) => { e.stopPropagation(); reset(); }} title="Remove file">
+              <button className="icon-btn" onClick={reset} title="Remove / start over">
                 <X size={17} />
               </button>
             </div>
@@ -375,9 +562,9 @@ function App() {
 
               <div className="rail-nodes">
                 {[
-                  { label: "Upload", threshold: 18 },
-                  { label: "Transcribe", threshold: 48 },
-                  { label: "Translate", threshold: 76 },
+                  { label: "Upload", threshold: 12 },
+                  { label: "Transcribe", threshold: 30 },
+                  { label: "Translate", threshold: 68 },
                   { label: "Voice", threshold: 100 }
                 ].map((stage, i, arr) => {
                   const isVoiceStage = i === arr.length - 1;
@@ -399,13 +586,54 @@ function App() {
             </div>
           )}
 
-          <button className="translate-btn" disabled={!file || uploading || (job && !["COMPLETED", "FAILED"].includes(job.status))} onClick={translate}>
-            {uploading || (job && !["COMPLETED", "FAILED"].includes(job.status)) ? (
-              <><LoaderCircle className="spin" size={20} /> Processing...</>
-            ) : (
-              <><Languages size={20} /> Translate audio</>
-            )}
-          </button>
+          {/* ---------- Stage 2 review: editable transcript ---------- */}
+          {awaitingTranscriptReview && (
+            <div className="review-panel">
+              <div className="review-head">
+                <Pencil size={15} />
+                <span>Review the transcript — edit anything before it gets translated</span>
+              </div>
+              <textarea
+                className="review-textarea"
+                value={transcriptDraft}
+                onChange={(e) => setTranscriptDraft(e.target.value)}
+                rows={6}
+              />
+              <button className="translate-btn" disabled={confirming} onClick={confirmTranscript}>
+                {confirming ? <><LoaderCircle className="spin" size={20} /> Confirming...</> : <><Check size={20} /> Confirm & translate</>}
+              </button>
+            </div>
+          )}
+
+          {/* ---------- Stage 3 review: editable translation ---------- */}
+          {awaitingTranslationReview && (
+            <div className="review-panel">
+              <div className="review-head">
+                <Pencil size={15} />
+                <span>Review the translation — edit anything before the voice is generated</span>
+              </div>
+              <textarea
+                className="review-textarea"
+                value={translationDraft}
+                onChange={(e) => setTranslationDraft(e.target.value)}
+                rows={6}
+              />
+              <button className="translate-btn" disabled={confirming} onClick={confirmTranslation}>
+                {confirming ? <><LoaderCircle className="spin" size={20} /> Confirming...</> : <><Check size={20} /> Confirm & generate voice</>}
+              </button>
+            </div>
+          )}
+
+          {/* ---------- Initial "kick off transcription" button ---------- */}
+          {!job && (
+            <button className="translate-btn" disabled={!file || isBusy} onClick={translate}>
+              {isBusy ? (
+                <><LoaderCircle className="spin" size={20} /> Processing...</>
+              ) : (
+                <><Languages size={20} /> Start transcription</>
+              )}
+            </button>
+          )}
         </section>
 
         {job?.status === "COMPLETED" && audioUrl && (
@@ -421,7 +649,7 @@ function App() {
             <div className="result-grid">
               <div className="result-card">
                 <div className="result-label-row">
-                  <div className="result-label">ORIGINAL TRANSCRIPT</div>
+                  <div className="result-label">FINAL TRANSCRIPT</div>
                   <button className="copy-btn" onClick={() => copyText(job.transcript, "transcript")} title="Copy transcript" disabled={!job.transcript}>
                     {copied === "transcript" ? <Check size={14} /> : <Copy size={14} />}
                   </button>
@@ -432,7 +660,7 @@ function App() {
 
               <div className="result-card accent-card">
                 <div className="result-label-row">
-                  <div className="result-label">TRANSLATED TEXT</div>
+                  <div className="result-label">FINAL TRANSLATED TEXT</div>
                   <button className="copy-btn" onClick={() => copyText(job.translatedText, "translated")} title="Copy translation" disabled={!job.translatedText}>
                     {copied === "translated" ? <Check size={14} /> : <Copy size={14} />}
                   </button>
